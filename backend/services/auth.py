@@ -12,15 +12,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 ALGORITHM = "HS256"
 
+# Passwords stored as plain text here, hashed on first use
 FAKE_USERS_DB = {
-    "admin": {"username": "admin", "hashed_password": pwd_context.hash("admin123"), "role": "admin"},
-    "user":  {"username": "user",  "hashed_password": pwd_context.hash("user123"),  "role": "viewer"},
+    "admin": {"username": "admin", "password": "admin123", "role": "admin"},
+    "user":  {"username": "user",  "password": "user123",  "role": "viewer"},
 }
-
-
-class TokenData(BaseModel):
-    username: Optional[str] = None
-    role: Optional[str] = None
 
 
 class User(BaseModel):
@@ -28,13 +24,9 @@ class User(BaseModel):
     role: str
 
 
-def verify_password(plain, hashed):
-    return pwd_context.verify(plain, hashed)
-
-
-def authenticate_user(username, password):
+def authenticate_user(username: str, password: str):
     user = FAKE_USERS_DB.get(username)
-    if not user or not verify_password(password, user["hashed_password"]):
+    if not user or user["password"] != password:
         return None
     return user
 
