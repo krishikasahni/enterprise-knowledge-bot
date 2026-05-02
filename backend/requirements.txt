@@ -21,7 +21,7 @@ beautifulsoup4==4.12.2
 requests==2.31.0
 
 # Vector math - pure Python wheels
-numpy==1.24.4
+numpy==1.26.4
 
 # Database
 sqlalchemy==2.0.23
