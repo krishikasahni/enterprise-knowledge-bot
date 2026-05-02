@@ -1,57 +1,47 @@
 import io
 import re
 from typing import List
-
 from pypdf import PdfReader
 import requests
 from bs4 import BeautifulSoup
 from docx import Document as DocxDocument
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
 from sqlalchemy import create_engine, text
-
-from db.vector_store import get_vectorstore, reset_vectorstore
+from db.vector_store import add_documents
 
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=CHUNK_SIZE,
-    chunk_overlap=CHUNK_OVERLAP,
-    separators=["\n\n", "\n", ". ", " ", ""],
-)
 
-
-def _add_to_store(docs: List[Document], source_label: str):
-    vs = get_vectorstore()
-    for doc in docs:
-        doc.metadata["source"] = source_label
-    vs.add_documents(docs)
-    reset_vectorstore()
+def _chunk_text(text: str) -> List[str]:
+    words = text.split()
+    chunks, current = [], []
+    length = 0
+    for word in words:
+        current.append(word)
+        length += len(word) + 1
+        if length >= CHUNK_SIZE:
+            chunks.append(" ".join(current))
+            current = current[-CHUNK_OVERLAP:]
+            length = sum(len(w) + 1 for w in current)
+    if current:
+        chunks.append(" ".join(current))
+    return [c for c in chunks if len(c.strip()) > 50]
 
 
 def ingest_pdf(file_bytes: bytes, filename: str) -> int:
     reader = PdfReader(io.BytesIO(file_bytes))
-    full_text = ""
-    for page in reader.pages:
-        full_text += page.extract_text() or ""
-    chunks = splitter.create_documents(
-        [full_text],
-        metadatas=[{"type": "pdf", "filename": filename}],
-    )
-    _add_to_store(chunks, filename)
-    return len(chunks)
+    text = "".join(page.extract_text() or "" for page in reader.pages)
+    chunks = _chunk_text(text)
+    meta = [{"source": filename, "type": "pdf"} for _ in chunks]
+    return add_documents(chunks, meta)
 
 
 def ingest_docx(file_bytes: bytes, filename: str) -> int:
     doc = DocxDocument(io.BytesIO(file_bytes))
-    full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-    chunks = splitter.create_documents(
-        [full_text],
-        metadatas=[{"type": "docx", "filename": filename}],
-    )
-    _add_to_store(chunks, filename)
-    return len(chunks)
+    text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    chunks = _chunk_text(text)
+    meta = [{"source": filename, "type": "docx"} for _ in chunks]
+    return add_documents(chunks, meta)
 
 
 def ingest_url(url: str) -> int:
@@ -60,14 +50,10 @@ def ingest_url(url: str) -> int:
     soup = BeautifulSoup(resp.text, "html.parser")
     for tag in soup(["nav", "footer", "script", "style", "header"]):
         tag.decompose()
-    text = soup.get_text(separator="\n")
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    chunks = splitter.create_documents(
-        [text],
-        metadatas=[{"type": "url", "url": url}],
-    )
-    _add_to_store(chunks, url)
-    return len(chunks)
+    text = re.sub(r"\n{3,}", "\n\n", soup.get_text(separator="\n")).strip()
+    chunks = _chunk_text(text)
+    meta = [{"source": url, "type": "url"} for _ in chunks]
+    return add_documents(chunks, meta)
 
 
 def ingest_sql(connection_string: str, query: str, label: str) -> int:
@@ -76,13 +62,7 @@ def ingest_sql(connection_string: str, query: str, label: str) -> int:
         result = conn.execute(text(query))
         rows = result.fetchall()
         columns = list(result.keys())
-    lines = ["\t".join(columns)]
-    for row in rows:
-        lines.append("\t".join(str(v) for v in row))
-    full_text = "\n".join(lines)
-    chunks = splitter.create_documents(
-        [full_text],
-        metadatas=[{"type": "sql", "label": label}],
-    )
-    _add_to_store(chunks, label)
-    return len(chunks)
+    lines = ["\t".join(columns)] + ["\t".join(str(v) for v in row) for row in rows]
+    chunks = _chunk_text("\n".join(lines))
+    meta = [{"source": label, "type": "sql"} for _ in chunks]
+    return add_documents(chunks, meta)

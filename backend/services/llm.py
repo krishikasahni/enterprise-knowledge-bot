@@ -1,60 +1,57 @@
-from typing import List, AsyncIterator
-from langchain.schema import Document
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
+from typing import List, Dict, AsyncIterator
+from openai import AsyncOpenAI
 from config import get_settings
 
 settings = get_settings()
-
-SYSTEM_PROMPT = """You are an expert enterprise knowledge assistant.
-Answer questions accurately using ONLY the provided context documents.
-If the answer is not in the context, say "I don't have enough information in the knowledge base to answer that."
-Always cite sources at the end: Sources: [source1], [source2]
-Be concise, professional, and helpful."""
-
-HUMAN_TEMPLATE = """Context documents:
-{context}
-
-Question: {question}"""
-
-prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", HUMAN_TEMPLATE),
-])
+_client = None
 
 
-def _format_context(docs: List[Document]) -> str:
+def get_client() -> AsyncOpenAI:
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI(api_key=settings.openai_api_key)
+    return _client
+
+
+def _build_context(docs: List[Dict]) -> str:
     parts = []
-    for i, doc in enumerate(docs, 1):
-        src = doc.metadata.get("source", "unknown")
-        parts.append(f"[Doc {i} | {src}]\n{doc.page_content}")
+    for i, item in enumerate(docs, 1):
+        src = item["metadata"].get("source", "unknown")
+        parts.append(f"[Doc {i} | {src}]\n{item['text']}")
     return "\n\n---\n\n".join(parts)
 
 
-def get_llm(streaming: bool = False) -> ChatOpenAI:
-    return ChatOpenAI(
-        openai_api_key=settings.openai_api_key,
-        model_name="gpt-3.5-turbo",
+SYSTEM = """You are an expert enterprise knowledge assistant.
+Answer questions using ONLY the provided context documents.
+If the answer is not in the context, say "I don't have enough information in the knowledge base to answer that."
+Always end your answer with: Sources: [list the sources you used]"""
+
+
+async def answer(question: str, docs: List[Dict]) -> str:
+    context = _build_context(docs)
+    resp = await get_client().chat.completions.create(
+        model="gpt-3.5-turbo",
         temperature=0.2,
-        streaming=streaming,
+        messages=[
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
+        ],
     )
+    return resp.choices[0].message.content
 
 
-async def answer(question: str, docs: List[Document]) -> str:
-    llm = get_llm()
-    chain = prompt | llm | StrOutputParser()
-    return await chain.ainvoke({
-        "context": _format_context(docs),
-        "question": question,
-    })
-
-
-async def answer_stream(question: str, docs: List[Document]) -> AsyncIterator[str]:
-    llm = get_llm(streaming=True)
-    chain = prompt | llm | StrOutputParser()
-    async for chunk in chain.astream({
-        "context": _format_context(docs),
-        "question": question,
-    }):
-        yield chunk
+async def answer_stream(question: str, docs: List[Dict]) -> AsyncIterator[str]:
+    context = _build_context(docs)
+    stream = await get_client().chat.completions.create(
+        model="gpt-3.5-turbo",
+        temperature=0.2,
+        stream=True,
+        messages=[
+            {"role": "system", "content": SYSTEM},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
+        ],
+    )
+    async for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
